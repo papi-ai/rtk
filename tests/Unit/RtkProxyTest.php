@@ -13,6 +13,8 @@
 declare(strict_types=1);
 
 use PapiAI\Core\Contracts\LLMTokenOptimisationProxyInterface;
+use PapiAI\Core\Contracts\TokenEstimatorInterface;
+use PapiAI\Core\HeuristicTokenEstimator;
 use PapiAI\Core\OptimisationResult;
 use PapiAI\Rtk\RtkProxy;
 
@@ -50,6 +52,10 @@ describe('RtkProxy', function () {
 
     it('implements the optimisation proxy contract', function () {
         expect($this->proxy)->toBeInstanceOf(LLMTokenOptimisationProxyInterface::class);
+    });
+
+    it('is usable as a plain token estimator', function () {
+        expect($this->proxy)->toBeInstanceOf(TokenEstimatorInterface::class);
     });
 
     describe('estimateTokens', function () {
@@ -137,6 +143,7 @@ describe('RtkProxy', function () {
 
             expect($result->optimised)->toBe('SHORT');
             expect($result->strategy)->toBe('rtk:command');
+            expect($result->isMeasured())->toBeTrue();
             expect($result->tokensBefore)->toBeGreaterThan($result->tokensAfter);
             expect($result->savingsPercent())->toBeGreaterThan(0.0);
 
@@ -144,6 +151,43 @@ describe('RtkProxy', function () {
             expect($this->proxy->calls)->toHaveCount(2);
             expect($this->proxy->calls[0]['argv'])->toBe(['sh', '-c', 'git status']);
             expect($this->proxy->calls[1]['argv'])->toBe(['sh', '-c', 'rtk git status']);
+        });
+
+        it('skips the baseline execution when measure is false', function () {
+            $result = $this->proxy->optimiseCommand('git status', ['measure' => false]);
+
+            expect($result->optimised)->toBe('SHORT');
+            expect($result->isMeasured())->toBeFalse();
+            expect($result->tokensBefore)->toBeNull();
+            expect($result->savingsPercent())->toBeNull();
+
+            // one execution: the rtk-filtered run only
+            expect($this->proxy->calls)->toHaveCount(1);
+            expect($this->proxy->calls[0]['argv'])->toBe(['sh', '-c', 'rtk git status']);
+        });
+
+        it('inserts the ultra-compact flag after the filter name', function () {
+            $this->proxy->optimiseCommand('git status --short', ['measure' => false, 'ultraCompact' => true]);
+
+            expect($this->proxy->calls[0]['argv'])->toBe(['sh', '-c', 'rtk git --ultra-compact status --short']);
+        });
+
+        it('appends the ultra-compact flag to a bare filter name', function () {
+            $this->proxy->optimiseCommand('ls', ['measure' => false, 'ultraCompact' => true]);
+
+            expect($this->proxy->calls[0]['argv'])->toBe(['sh', '-c', 'rtk ls --ultra-compact']);
+        });
+    });
+
+    describe('token estimation', function () {
+        it('defaults to the core byte-based heuristic', function () {
+            expect($this->proxy->estimateTokens('abcd'))->toBe(1);
+        });
+
+        it('accepts an injected estimator', function () {
+            $proxy = new TestableRtkProxy('rtk', new HeuristicTokenEstimator(2));
+
+            expect($proxy->estimateTokens('abcd'))->toBe(2);
         });
     });
 });
