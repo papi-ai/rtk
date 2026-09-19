@@ -66,6 +66,7 @@ class RtkProxy implements LLMTokenOptimisationProxyInterface
         }
 
         $optimised = $this->execute(array_merge([$this->binary], $args), $content);
+        $this->assertNotSwallowed($content, $optimised, 'rtk pipe');
         $strategy = isset($options['filter']) ? 'rtk:pipe:' . $options['filter'] : 'rtk:pipe';
 
         return new OptimisationResult(
@@ -85,11 +86,14 @@ class RtkProxy implements LLMTokenOptimisationProxyInterface
      */
     public function optimiseCommand(string $command, array $options = []): OptimisationResult
     {
-        $tokensBefore = ($options['measure'] ?? true)
-            ? $this->estimateTokens($this->execute(['sh', '-c', $command]))
-            : null;
+        $raw = ($options['measure'] ?? true) ? $this->execute(['sh', '-c', $command]) : null;
+        $tokensBefore = $raw === null ? null : $this->estimateTokens($raw);
 
         $optimised = $this->execute(['sh', '-c', $this->binary . ' ' . $this->withUltraCompact($command, $options)]);
+
+        if ($raw !== null) {
+            $this->assertNotSwallowed($raw, $optimised, $command);
+        }
 
         return new OptimisationResult(
             $optimised,
@@ -106,6 +110,24 @@ class RtkProxy implements LLMTokenOptimisationProxyInterface
     }
 
     /**
+     * Empty output for non-empty input is a failure, not a saving.
+     *
+     * @throws RuntimeException When RTK produced no output for input that had some
+     */
+    private function assertNotSwallowed(string $input, string $optimised, string $what): void
+    {
+        if ($optimised !== '' || trim($input) === '') {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'RTK returned no output for "%s" although the input had %d tokens.',
+            $what,
+            $this->estimateTokens($input),
+        ));
+    }
+
+    /**
      * Run a process, optionally feeding it stdin, and return its stdout.
      *
      * Isolated so tests can stub process execution. Uses an argv array (no shell) except where
@@ -116,7 +138,7 @@ class RtkProxy implements LLMTokenOptimisationProxyInterface
      *
      * @return string The process stdout (empty string on no output)
      *
-     * @throws RuntimeException When the process cannot be started
+     * @throws RuntimeException When the process cannot be started or exits non-zero
      */
     protected function execute(array $argv, ?string $stdin = null): string
     {
@@ -139,9 +161,19 @@ class RtkProxy implements LLMTokenOptimisationProxyInterface
         fclose($pipes[0]);
 
         $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
         fclose($pipes[1]);
         fclose($pipes[2]);
-        proc_close($process);
+        $exitCode = proc_close($process);
+
+        if ($exitCode !== 0) {
+            throw new RuntimeException(sprintf(
+                '"%s" exited with code %d: %s',
+                implode(' ', $argv),
+                $exitCode,
+                trim((string) $stderr) !== '' ? trim((string) $stderr) : 'no error output',
+            ));
+        }
 
         return $stdout === false ? '' : $stdout;
     }

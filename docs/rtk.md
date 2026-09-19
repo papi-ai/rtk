@@ -50,6 +50,10 @@ Every call returns an immutable `OptimisationResult`:
 | `savingsPercent()` | saving as a percentage |
 | `strategy` | `rtk:pipe`, `rtk:pipe:<filter>`, or `rtk:command` |
 
+## Failures
+
+A command RTK cannot handle throws a `RuntimeException` carrying its exit code and stderr.
+
 ## Requirements
 
 The `rtk` binary must be on `PATH` at runtime (`brew install rtk`). It is **not** a Composer
