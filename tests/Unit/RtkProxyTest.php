@@ -17,6 +17,7 @@ use PapiAI\Core\Contracts\TokenEstimatorInterface;
 use PapiAI\Core\HeuristicTokenEstimator;
 use PapiAI\Core\OptimisationResult;
 use PapiAI\Rtk\RtkProxy;
+use RuntimeException;
 
 /**
  * Test subclass that stubs process execution so no real `rtk` binary runs.
@@ -26,9 +27,17 @@ class TestableRtkProxy extends RtkProxy
     /** @var array<int, array{argv: array<int, string>, stdin: string|null}> */
     public array $calls = [];
 
+    public bool $rtkReturnsNothing = false;
+
     protected function execute(array $argv, ?string $stdin = null): string
     {
         $this->calls[] = ['argv' => $argv, 'stdin' => $stdin];
+
+        $viaRtk = in_array('pipe', $argv, true) || str_starts_with($argv[2] ?? '', 'rtk ');
+
+        if ($this->rtkReturnsNothing && $viaRtk) {
+            return '';
+        }
 
         // `rtk pipe` (argv contains 'pipe')
         if (in_array('pipe', $argv, true)) {
@@ -188,6 +197,47 @@ describe('RtkProxy', function () {
             $proxy = new TestableRtkProxy('rtk', new HeuristicTokenEstimator(2));
 
             expect($proxy->estimateTokens('abcd'))->toBe(2);
+        });
+    });
+    describe('when RTK returns nothing', function () {
+        it('throws for a command that produced output', function () {
+            $this->proxy->rtkReturnsNothing = true;
+
+            expect(fn () => $this->proxy->optimiseCommand('find src -exec wc -l {} +'))
+                ->toThrow(RuntimeException::class, 'returned no output');
+        });
+
+        it('throws for piped content', function () {
+            $this->proxy->rtkReturnsNothing = true;
+
+            expect(fn () => $this->proxy->optimise('some content worth keeping'))
+                ->toThrow(RuntimeException::class, 'returned no output');
+        });
+
+        it('accepts empty output for empty input', function () {
+            $this->proxy->rtkReturnsNothing = true;
+
+            $result = $this->proxy->optimise('');
+
+            expect($result->optimised)->toBe('');
+            expect($result->tokensSaved())->toBe(0);
+        });
+
+        it('reports no saving for an unmeasured command', function () {
+            $this->proxy->rtkReturnsNothing = true;
+
+            $result = $this->proxy->optimiseCommand('find src', ['measure' => false]);
+
+            expect($result->savingsPercent())->toBeNull();
+        });
+    });
+
+    describe('process failures', function () {
+        it('throws with the exit code and stderr when the process fails', function () {
+            $proxy = new RtkProxy('sh');
+
+            expect(fn () => $proxy->optimiseCommand('echo boom >&2; exit 3', ['measure' => false]))
+                ->toThrow(RuntimeException::class, 'exited with code 3');
         });
     });
 });
